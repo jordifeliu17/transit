@@ -46,10 +46,10 @@
 <div class="barra">
   <label>Durada (s) <input id="cfgDurada" type="number" value="60" min="10" max="300"></label>
   <label>Velocitat <input id="cfgVel" type="number" value="120" min="40" max="400"></label>
-  <label>Amplada camí <input id="cfgAmple" type="number" value="70" min="30" max="200"></label>
-  <label>% mínim apte <input id="cfgApte" type="number" value="85" min="0" max="100"></label>
-  <label><input id="cfgInvEsq" type="checkbox"> Inverteix mà esquerra</label>
-  <label><input id="cfgInvDre" type="checkbox"> Inverteix mà dreta</label>
+  <label>Amplada camí <input id="cfgAmple" type="number" value="140" min="30" max="250"></label>
+  <label><input id="cfgInvEsq" type="checkbox" checked> Inverteix mà esquerra</label>
+  <label><input id="cfgInvDre" type="checkbox" checked> Inverteix mà dreta</label>
+  <label><input id="cfgSo" type="checkbox" checked> So</label>
 </div>
 
 <div id="escena">
@@ -74,7 +74,28 @@ const W = cv.width, H = cv.height;
 const CARRIL_W = W / 2;          // cada mà té mitja pantalla
 const MARGE = 40;                // marge lateral dins de cada carril
 const BOLA_Y = H - 90;           // alçada fixa de les boles
-const BOLA_R = 9;
+const BOLA_R = 14;
+
+// ---------- So (beep quan la bola surt del camí) ----------
+// El navegador només deixa fer sons després d'un clic, per això
+// el "motor de so" es crea quan es prem "Inicia prova".
+let audio = null;
+function preparaSo() {
+  if (!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (audio && audio.state === 'suspended') audio.resume();
+}
+function beep(freq) {
+  if (!audio || !document.getElementById('cfgSo').checked) return;
+  const osc = audio.createOscillator();
+  const vol = audio.createGain();
+  osc.type = 'square';
+  osc.frequency.value = freq;
+  vol.gain.setValueAtTime(0.15, audio.currentTime);
+  vol.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.15);
+  osc.connect(vol).connect(audio.destination);
+  osc.start();
+  osc.stop(audio.currentTime + 0.15);
+}
 
 const $ = id => document.getElementById(id);
 const estatEl = $('estat');
@@ -176,7 +197,7 @@ $('btnCalibra').onclick = () => {
   fase = 'calibrant'; tFase = 0;
   estatEl.textContent = 'Gira les dues rodes d\'una punta a l\'altra...';
 };
-$('btnInicia').onclick = () => iniciaProva();
+$('btnInicia').onclick = () => { preparaSo(); iniciaProva(); };
 
 // ---------- Pantalla completa ----------
 // Afegeix la classe "complet" (el joc ocupa tota la finestra) i, si el
@@ -299,7 +320,10 @@ function avalua(costat, dt) {
   const dins = Math.abs(xBola - xCami) <= ample / 2;
   s.total += dt;
   if (dins) s.dins += dt;
-  if (s.eraDins && !dins) s.sortides++;
+  if (s.eraDins && !dins) {
+    s.sortides++;
+    beep(costat === 'esq' ? 440 : 660);   // to greu = esquerra, agut = dreta
+  }
   s.eraDins = dins;
 }
 
@@ -360,25 +384,17 @@ function dibuixa() {
 }
 
 function dibuixaResultat() {
-  const minim = +$('cfgApte').value;
   const pct = c => stats[c].total ? 100 * stats[c].dins / stats[c].total : 0;
   const pe = pct('esq'), pd = pct('dre');
-  const apte = pe >= minim && pd >= minim;
 
   ctx.fillStyle = 'rgba(17,20,24,0.88)';
-  ctx.fillRect(120, 110, W - 240, 300);
+  ctx.fillRect(120, 150, W - 240, 190);
   ctx.fillStyle = '#e8eaed';
   ctx.font = 'bold 26px system-ui';
-  ctx.fillText('Resultat', W / 2, 155);
-  ctx.font = '18px system-ui';
-  ctx.fillText(`Mà esquerra: ${pe.toFixed(1)} % dins · ${stats.esq.sortides} sortides`, W / 2, 210);
-  ctx.fillText(`Mà dreta: ${pd.toFixed(1)} % dins · ${stats.dre.sortides} sortides`, W / 2, 245);
-  ctx.font = 'bold 40px system-ui';
-  ctx.fillStyle = apte ? '#3fbf6a' : '#e5534b';
-  ctx.fillText(apte ? 'APTE' : 'NO APTE', W / 2, 320);
-  ctx.font = '14px system-ui';
-  ctx.fillStyle = '#9aa3ad';
-  ctx.fillText(`Mínim per ser apte: ${minim} % a cada mà`, W / 2, 360);
+  ctx.fillText('Resultat', W / 2, 200);
+  ctx.font = '20px system-ui';
+  ctx.fillText(`Mà esquerra: ${pe.toFixed(1)} % dins · ${stats.esq.sortides} sortides`, W / 2, 260);
+  ctx.fillText(`Mà dreta: ${pd.toFixed(1)} % dins · ${stats.dre.sortides} sortides`, W / 2, 300);
 }
 
 requestAnimationFrame(bucle);
