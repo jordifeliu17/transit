@@ -102,7 +102,19 @@ const estatEl = $('estat');
 
 // Valors crus dels potenciòmetres (0-4095) i calibratge
 let cru = { esq: 2048, dre: 2048 };
-let cal = { esqMin: 0, esqMax: 4095, dreMin: 0, dreMax: 4095 };
+// Per cada mà guardem 3 punts: e = esquerra, m = mig, d = dreta
+let cal = { esq: { e: 0, m: 2048, d: 4095 }, dre: { e: 0, m: 2048, d: 4095 } };
+
+// Calibratge guiat: 3 passos. A cada pas hi ha T_MOURE segons per moure el
+// joystick i T_MESURA segons on es fa la mitjana de les lectures.
+// No cal anar fins al final: on posis la dreta i l'esquerra serà la vora del carril.
+const PASSOS = [
+  { clau: 'm', text: 'al MIG', ajuda: 'la posició de repòs' },
+  { clau: 'd', text: 'a la DRETA', ajuda: 'fins on et resulti còmode' },
+  { clau: 'e', text: "a l'ESQUERRA", ajuda: 'fins on et resulti còmode' },
+];
+const T_MOURE = 5, T_MESURA = 1, T_PAS = T_MOURE + T_MESURA;
+let calNou, sumes;
 let suau = { esq: 0.5, dre: 0.5 };   // posició filtrada 0..1
 
 // Teclat (mode sense placa)
@@ -193,9 +205,10 @@ async function llegeixPort(port) {
 
 // ---------- Botons ----------
 $('btnCalibra').onclick = () => {
-  cal = { esqMin: 4095, esqMax: 0, dreMin: 4095, dreMax: 0 };
+  calNou = { esq: {}, dre: {} };
+  sumes = { esq: 0, dre: 0, n: 0 };
   fase = 'calibrant'; tFase = 0;
-  estatEl.textContent = 'Gira les dues rodes d\'una punta a l\'altra...';
+  estatEl.textContent = 'Calibrant: segueix les instruccions de la pantalla';
 };
 $('btnInicia').onclick = () => { preparaSo(); iniciaProva(); };
 
@@ -270,13 +283,32 @@ function posicioNormalitzada(costat) {
     n = suau[costat] + (tecles[mes] ? pas : 0) - (tecles[menys] ? pas : 0);
     return Math.min(1, Math.max(0, n));
   }
+  // Converteix el valor cru en 0 (esquerra) .. 0,5 (mig) .. 1 (dreta).
+  // Cada meitat té la seva escala, així el mig del joystick és el mig del carril.
   const v = cru[costat];
-  const mn = cal[costat + 'Min'], mx = cal[costat + 'Max'];
-  n = mx > mn ? (v - mn) / (mx - mn) : 0.5;
+  const { e, m, d } = cal[costat];
+  if (e !== m && (v - m) / (e - m) > 0) n = 0.5 - 0.5 * (v - m) / (e - m);   // costat esquerre
+  else if (d !== m) n = 0.5 + 0.5 * (v - m) / (d - m);                      // costat dret
+  else n = 0.5;
   n = Math.min(1, Math.max(0, n));
   if ($(costat === 'esq' ? 'cfgInvEsq' : 'cfgInvDre').checked) n = 1 - n;
   // filtre suau: barreja la posició nova amb l'anterior (treu tremolors del senyal)
   return suau[costat] * 0.6 + n * 0.4;
+}
+
+function acabaCalibratge() {
+  fase = 'espera';
+  const ok = c => c.e !== undefined && c.m !== undefined && c.d !== undefined
+               && Math.abs(c.d - c.e) > 150;      // cal que dreta i esquerra siguin prou diferents
+  if (ok(calNou.esq) && ok(calNou.dre)) {
+    cal = calNou;
+    // La direcció ja la diu el calibratge, així que no cal invertir res
+    $('cfgInvEsq').checked = false;
+    $('cfgInvDre').checked = false;
+    estatEl.textContent = `Calibrat ✔ (esq ${cal.esq.e}/${cal.esq.m}/${cal.esq.d}, dre ${cal.dre.e}/${cal.dre.m}/${cal.dre.d})`;
+  } else {
+    estatEl.textContent = '⚠ Calibratge no vàlid: els joysticks gairebé no s\'han mogut. Torna-ho a provar.';
+  }
 }
 
 // ---------- Bucle principal ----------
@@ -290,12 +322,21 @@ function bucle(t) {
   suau.dre = posicioNormalitzada('dre');
 
   if (fase === 'calibrant') {
-    cal.esqMin = Math.min(cal.esqMin, cru.esq); cal.esqMax = Math.max(cal.esqMax, cru.esq);
-    cal.dreMin = Math.min(cal.dreMin, cru.dre); cal.dreMax = Math.max(cal.dreMax, cru.dre);
-    if (tFase > 6) {
-      fase = 'espera';
-      estatEl.textContent = `Calibrat ✔ (esq ${cal.esqMin}-${cal.esqMax}, dre ${cal.dreMin}-${cal.dreMax})`;
+    const pas = Math.floor(tFase / T_PAS);
+    const dinsPas = tFase - pas * T_PAS;
+    if (pas < PASSOS.length && dinsPas >= T_MOURE) {
+      // Segon de mesura: acumulem per fer la mitjana
+      sumes.esq += cru.esq; sumes.dre += cru.dre; sumes.n++;
     }
+    // Quan acaba un pas, guardem la mitjana i preparem el següent
+    const pasAnterior = Math.floor((tFase - dt) / T_PAS);
+    if (pas !== pasAnterior && pasAnterior < PASSOS.length && sumes.n > 0) {
+      const clau = PASSOS[pasAnterior].clau;
+      calNou.esq[clau] = Math.round(sumes.esq / sumes.n);
+      calNou.dre[clau] = Math.round(sumes.dre / sumes.n);
+      sumes = { esq: 0, dre: 0, n: 0 };
+    }
+    if (pas >= PASSOS.length) acabaCalibratge();
   } else if (fase === 'compte' && tFase > 3) {
     fase = 'prova'; tFase = 0;
     estatEl.textContent = 'Prova en marxa';
@@ -370,8 +411,20 @@ function dibuixa() {
     ctx.font = '22px system-ui';
     ctx.fillText('Connecta, calibra i prem "Inicia prova"', W / 2, H / 2 - 40);
   } else if (fase === 'calibrant') {
-    ctx.font = '22px system-ui';
-    ctx.fillText(`Calibrant... gira les rodes al màxim i al mínim (${Math.ceil(6 - tFase)})`, W / 2, H / 2 - 40);
+    const pas = Math.min(PASSOS.length - 1, Math.floor(tFase / T_PAS));
+    const dinsPas = tFase - pas * T_PAS;
+    ctx.fillStyle = 'rgba(17,20,24,0.85)';
+    ctx.fillRect(80, H / 2 - 120, W - 160, 170);
+    ctx.fillStyle = '#9aa3ad';
+    ctx.font = '16px system-ui';
+    ctx.fillText(`Calibratge · pas ${pas + 1} de ${PASSOS.length}`, W / 2, H / 2 - 85);
+    ctx.fillStyle = '#e8eaed';
+    ctx.font = 'bold 28px system-ui';
+    ctx.fillText(`Posa els dos joysticks ${PASSOS[pas].text}`, W / 2, H / 2 - 35);
+    ctx.font = '18px system-ui';
+    ctx.fillStyle = dinsPas >= T_MOURE ? '#3fbf6a' : '#9aa3ad';
+    ctx.fillText(dinsPas >= T_MOURE ? 'Mesurant... no et moguis'
+                                    : `${PASSOS[pas].ajuda} · ${Math.ceil(T_MOURE - dinsPas)}...`, W / 2, H / 2 + 15);
   } else if (fase === 'compte') {
     ctx.font = 'bold 80px system-ui';
     ctx.fillText(Math.ceil(3 - tFase), W / 2, H / 2 - 40);
